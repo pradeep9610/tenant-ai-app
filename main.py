@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, status
 from sqlalchemy.orm import Session
 import uuid
 
@@ -6,7 +6,7 @@ import database
 import db_models
 from models import TenantApplication, VerificationResponse
 
-# Create SQLite database tables on startup
+# Initialize SQLite DB tables on startup
 db_models.Base.metadata.create_all(bind=database.engine)
 
 app = FastAPI(title="Tenant Screening AI API")
@@ -15,6 +15,7 @@ app = FastAPI(title="Tenant Screening AI API")
 def read_root():
     return {"message": "Tenant Screening AI Service Online"}
 
+# 1. CREATE: Screen & Save Tenant Application
 @app.post("/verify-tenant", response_model=VerificationResponse)
 def verify_tenant(
     application: TenantApplication, 
@@ -24,12 +25,12 @@ def verify_tenant(
     risk_score = 0
     flags = []
 
-    # 1. Income Check (Universal)
+    # Income Check
     if application.annual_income < 30000:
         risk_score += 35
         flags.append("Income below minimum threshold ($30,000 / £25,000 / AED 110,000).")
 
-    # 2. Country-Specific Validation Rules
+    # Country Rules Check
     if country == "US":
         if not application.ssn_last4 or len(application.ssn_last4) != 4:
             flags.append("US Compliance Warning: Missing or invalid 4-digit SSN.")
@@ -50,14 +51,14 @@ def verify_tenant(
         if not application.emirates_id:
             risk_score += 40
             flags.append("UAE Compliance Error: Missing Emirates ID.")
-        if application.annual_income < 72000:  # ~6,000 AED/month threshold
+        if application.annual_income < 72000:
             risk_score += 25
             flags.append("UAE Market Warning: Income below UAE standard rent-to-income ratio.")
 
     else:
         raise HTTPException(status_code=400, detail="Unsupported country. Supported markets: US, UK, UAE")
 
-    # Final Decision Output
+    # Final Risk Assessment
     if risk_score >= 70:
         recommendation = "Rejected / Guarantor Mandatory"
     elif risk_score >= 30:
@@ -67,7 +68,7 @@ def verify_tenant(
 
     app_id = str(uuid.uuid4())
 
-    # 3. Save Record to SQLite Database
+    # Save to SQLite Database
     db_record = db_models.DBTenantApplication(
         id=app_id,
         full_name=application.full_name,
@@ -92,8 +93,38 @@ def verify_tenant(
         "breakdown": flags
     }
 
+# 2. READ ALL: Fetch all applications
 @app.get("/applications")
 def get_all_applications(db: Session = Depends(database.get_db)):
-    """Fetch all screened tenant applications saved in the database."""
-    applications = db.query(db_models.DBTenantApplication).all()
-    return applications
+    return db.query(db_models.DBTenantApplication).all()
+
+# 3. READ ONE: Fetch single application by ID
+@app.get("/applications/{app_id}")
+def get_application(app_id: str, db: Session = Depends(database.get_db)):
+    application = db.query(db_models.DBTenantApplication).filter(db_models.DBTenantApplication.id == app_id).first()
+    if not application:
+        raise HTTPException(status_code=404, detail="Application not found")
+    return application
+
+# 4. UPDATE: Change recommendation status (e.g., Manual Override)
+@app.put("/applications/{app_id}")
+def update_application_status(app_id: str, new_recommendation: str, db: Session = Depends(database.get_db)):
+    application = db.query(db_models.DBTenantApplication).filter(db_models.DBTenantApplication.id == app_id).first()
+    if not application:
+        raise HTTPException(status_code=404, detail="Application not found")
+    
+    application.recommendation = new_recommendation
+    db.commit()
+    db.refresh(application)
+    return {"message": "Application status updated successfully", "updated_record": application}
+
+# 5. DELETE: Remove an application record
+@app.delete("/applications/{app_id}")
+def delete_application(app_id: str, db: Session = Depends(database.get_db)):
+    application = db.query(db_models.DBTenantApplication).filter(db_models.DBTenantApplication.id == app_id).first()
+    if not application:
+        raise HTTPException(status_code=404, detail="Application not found")
+    
+    db.delete(application)
+    db.commit()
+    return {"message": f"Application {app_id} deleted successfully"}
