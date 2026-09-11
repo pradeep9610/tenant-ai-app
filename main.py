@@ -1,10 +1,23 @@
-from fastapi import FastAPI, HTTPException, Depends, status
+from fastapi import FastAPI, HTTPException, Depends, status, Security
+from fastapi.security import APIKeyHeader
 from sqlalchemy.orm import Session
 import uuid
 
 import database
 import db_models
 from models import TenantApplication, VerificationResponse
+
+# Define API Key setup
+API_KEY = "tenant-ai-secret-key-123"  # Real app mein ise .env mein rakhte hain
+api_key_header = APIKeyHeader(name="X-API-KEY", auto_error=False)
+
+def verify_api_key(api_key: str = Security(api_key_header)):
+    if api_key != API_KEY:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing API Key"
+        )
+    return api_key
 
 # Initialize SQLite DB tables on startup
 db_models.Base.metadata.create_all(bind=database.engine)
@@ -15,8 +28,8 @@ app = FastAPI(title="Tenant Screening AI API")
 def read_root():
     return {"message": "Tenant Screening AI Service Online"}
 
-# 1. CREATE: Screen & Save Tenant Application
-@app.post("/verify-tenant", response_model=VerificationResponse)
+# 1. CREATE: Screen & Save Tenant Application (Secured)
+@app.post("/verify-tenant", response_model=VerificationResponse, dependencies=[Depends(verify_api_key)])
 def verify_tenant(
     application: TenantApplication, 
     db: Session = Depends(database.get_db)
@@ -93,21 +106,21 @@ def verify_tenant(
         "breakdown": flags
     }
 
-# 2. READ ALL: Fetch all applications
-@app.get("/applications")
+# 2. READ ALL: Fetch all applications (Secured)
+@app.get("/applications", dependencies=[Depends(verify_api_key)])
 def get_all_applications(db: Session = Depends(database.get_db)):
     return db.query(db_models.DBTenantApplication).all()
 
-# 3. READ ONE: Fetch single application by ID
-@app.get("/applications/{app_id}")
+# 3. READ ONE: Fetch single application by ID (Secured)
+@app.get("/applications/{app_id}", dependencies=[Depends(verify_api_key)])
 def get_application(app_id: str, db: Session = Depends(database.get_db)):
     application = db.query(db_models.DBTenantApplication).filter(db_models.DBTenantApplication.id == app_id).first()
     if not application:
         raise HTTPException(status_code=404, detail="Application not found")
     return application
 
-# 4. UPDATE: Change recommendation status (e.g., Manual Override)
-@app.put("/applications/{app_id}")
+# 4. UPDATE: Change recommendation status (Secured)
+@app.put("/applications/{app_id}", dependencies=[Depends(verify_api_key)])
 def update_application_status(app_id: str, new_recommendation: str, db: Session = Depends(database.get_db)):
     application = db.query(db_models.DBTenantApplication).filter(db_models.DBTenantApplication.id == app_id).first()
     if not application:
@@ -118,8 +131,8 @@ def update_application_status(app_id: str, new_recommendation: str, db: Session 
     db.refresh(application)
     return {"message": "Application status updated successfully", "updated_record": application}
 
-# 5. DELETE: Remove an application record
-@app.delete("/applications/{app_id}")
+# 5. DELETE: Remove an application record (Secured)
+@app.delete("/applications/{app_id}", dependencies=[Depends(verify_api_key)])
 def delete_application(app_id: str, db: Session = Depends(database.get_db)):
     application = db.query(db_models.DBTenantApplication).filter(db_models.DBTenantApplication.id == app_id).first()
     if not application:
