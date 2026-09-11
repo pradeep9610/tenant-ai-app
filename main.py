@@ -1,6 +1,13 @@
-from fastapi import FastAPI, HTTPException
-from models import TenantApplication, VerificationResponse
+from fastapi import FastAPI, HTTPException, Depends
+from sqlalchemy.orm import Session
 import uuid
+
+import database
+import db_models
+from models import TenantApplication, VerificationResponse
+
+# Create SQLite database tables on startup
+db_models.Base.metadata.create_all(bind=database.engine)
 
 app = FastAPI(title="Tenant Screening AI API")
 
@@ -9,7 +16,10 @@ def read_root():
     return {"message": "Tenant Screening AI Service Online"}
 
 @app.post("/verify-tenant", response_model=VerificationResponse)
-def verify_tenant(application: TenantApplication):
+def verify_tenant(
+    application: TenantApplication, 
+    db: Session = Depends(database.get_db)
+):
     country = application.country.upper()
     risk_score = 0
     flags = []
@@ -55,11 +65,35 @@ def verify_tenant(application: TenantApplication):
     else:
         recommendation = "Approved"
 
+    app_id = str(uuid.uuid4())
+
+    # 3. Save Record to SQLite Database
+    db_record = db_models.DBTenantApplication(
+        id=app_id,
+        full_name=application.full_name,
+        email=application.email,
+        country=country,
+        annual_income=application.annual_income,
+        credit_score=application.credit_score,
+        employment_status=application.employment_status,
+        risk_score=risk_score,
+        recommendation=recommendation
+    )
+    db.add(db_record)
+    db.commit()
+    db.refresh(db_record)
+
     return {
-        "application_id": str(uuid.uuid4()),
+        "application_id": app_id,
         "country": country,
-        "status": "Processed",
+        "status": "Processed & Saved",
         "risk_score": risk_score,
         "recommendation": recommendation,
         "breakdown": flags
     }
+
+@app.get("/applications")
+def get_all_applications(db: Session = Depends(database.get_db)):
+    """Fetch all screened tenant applications saved in the database."""
+    applications = db.query(db_models.DBTenantApplication).all()
+    return applications
